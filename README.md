@@ -15,7 +15,10 @@
 ## 📑 Table of Contents
 
 - [Part A. 서버 설계](#part-a-서버-설계)
-  - [A-1. 작업 단계](#a-1-작업-단계)
+  - [1️⃣ 요구사항 분석 및 가정 정의](#1️⃣-요구사항-분석-및-가정-정의)
+  - [2️⃣ 데이터 모델 확장](#2️⃣-데이터-모델-확장)
+  - [3️⃣ Provider 추상화 구조 도입](#3️⃣-provider-추상화-구조-도입)
+  - [4️⃣ 발송 파이프라인 비동기화](#4️⃣-발송-파이프라인-비동기화)
   - [A-2. 기술적 결정 사항](#a-2-기술적-결정-사항)
   - [A-3. 리스크 및 대응](#a-3-리스크-및-대응)
 - [Part B. 화면 설계](#part-b-화면-설계)
@@ -26,40 +29,28 @@
 
 # Part A. 서버 설계
 
-## A-1. 작업 단계
-
 ---
 
-### 1단계. 요구사항 분석 및 가정 정의
+## 1️⃣ 요구사항 분석 및 가정 정의
 
-#### 🎯 목표
-- 멀티테넌트 환경에서 조직별 메시지 업체 분리 구조 정의
-- 조직 단위 API Key/Secret 관리 방식 확정
-- 업체 변경 시 발송 일관성 정책 정의
+### 🎯 목표
+- 조직별 메시지 업체 분리
+- 업체 변경 시 발송 일관성 보장
+- 보안 강화 및 장애 격리
 
-#### 📌 가정
-- 한 조직은 동시에 1개의 ACTIVE 업체만 사용
+### 📌 가정
+- 한 조직은 하나의 ACTIVE 업체만 사용
 - 각 조직은 외부 업체 계정을 별도로 보유
 - 메시지 발송은 외부 HTTP API 호출 기반
-- 메시지 발송 내역은 DB 저장
-- 메시지 발송은 대량 트래픽 가능성 존재
+- 발송 내역은 DB 저장
+- 대량 트래픽 가능성 존재
 - org_id는 JWT 기반으로 서버에서 강제 추출
 
-#### 💡 설계 의도
-구현 이전에 조직 단위 계약/과금 모델을 명확히 정의해야  
-데이터 모델과 발송 구조를 일관되게 설계할 수 있기 때문에  
-요구사항 분석을 최우선 단계로 배치하였다.
-
 ---
 
-### 2단계. 데이터 모델 확장
+## 2️⃣ 데이터 모델 확장
 
-Provider 추상화 및 발송 파이프라인 변경은  
-조직별 설정 저장 구조를 전제로 하므로 데이터 모델을 먼저 확정하였다.
-
----
-
-#### 📌 OrganizationMessageConfig
+### 📌 OrganizationMessageConfig
 
 | 컬럼명 | 타입 | 설명 |
 |--------|------|------|
@@ -72,14 +63,14 @@ Provider 추상화 및 발송 파이프라인 변경은
 | updated_at | DATETIME | 수정 시각 |
 | updated_by | USER_ID | 수정자 |
 
-#### 🔎 설계 의도
-- status 분리는 운영 실수 방지를 위한 안전 장치
-- credentials_enc는 보안 사고 예방을 위한 암호화 저장
-- version은 동시 수정 충돌 방지
+### 🔎 설계 의도
+- DRAFT → TEST → ACTIVE 구조로 운영 실수 방지
+- Secret 암호화 저장
+- 낙관적 락으로 동시 수정 방지
 
 ---
 
-#### 📌 Message 테이블 변경
+### 📌 Message 테이블 변경
 
 | 컬럼명 | 타입 | 설명 |
 |--------|------|------|
@@ -89,25 +80,22 @@ Provider 추상화 및 발송 파이프라인 변경은
 | status | ENUM | PENDING / SENT / FAILED |
 | fail_reason | TEXT | 실패 사유 |
 
-#### 🔎 provider_snapshot 설계 이유
+### 🔎 provider_snapshot 설계 이유
 
-업체 변경 이후에도  
-이미 생성된 메시지의 발송 경로가 변경되지 않도록  
-일관성을 보장하기 위함이다.
-
-이는 재시도 및 장애 복구 시 동일 Provider를 사용하도록 보장한다.
+- 메시지 생성 시점에 ACTIVE provider 저장
+- 재시도/비동기 처리 시 snapshot 기준으로 Provider 선택
+- 업체 변경 후에도 기존 메시지는 동일 업체로 발송 보장
 
 ---
 
-### 3단계. Provider 추상화 구조 도입
+## 3️⃣ Provider 추상화 구조 도입
 
-#### ❌ 기존 방식: if-else 분기
+### ❌ 기존 방식 (if-else 분기)
+- OCP 위반
+- 유지보수성 저하
+- 테스트 분리 어려움
 
-- 업체 추가 시 기존 코드 수정 필요 (OCP 위반)
-- 서비스 레이어 책임 과다
-- 테스트 및 장애 처리 분리 어려움
-
-#### ✅ 선택: 전략 패턴 기반 Provider 추상화
+### ✅ 전략 패턴 적용
 
 ```kotlin
 interface MessageProvider {
@@ -117,29 +105,176 @@ interface MessageProvider {
 class CloudMessageProvider : MessageProvider
 class SendTalkProvider : MessageProvider
 
-val provider = providerResolver.resolve(org.providerType)
+val provider = providerResolver.resolve(orgId)
 provider.send(request)
 ```
-🔎 ProviderResolver의 역할
 
-조직의 ACTIVE 설정을 조회하여 provider_type을 결정한다.
+### 🔎 ProviderResolver의 역할
 
-provider_type에 따라 적절한 MessageProvider 구현체를 반환한다.
+- JWT 기반 org_id 추출
+- OrganizationMessageConfig에서 ACTIVE 설정 조회
+- provider_type 기반 Provider 구현체 반환
+- Secret 복호화 처리
 
-서비스 레이어는 Provider 구현체에 대한 구체적인 의존 없이 send()만 호출한다.
+---
 
-이를 통해 서비스 레이어는 발송 흐름만 책임지고,
-업체별 구현 세부사항은 Provider 구현체로 격리된다.
+### 📊 Provider 책임 분리 구조
 
 ```mermaid
 flowchart LR
-    Org[Organization]
-    Config[OrganizationMessageConfig]
+    Service[MessageService]
     Resolver[ProviderResolver]
+    Config[(OrganizationMessageConfig)]
     Cloud[CloudMessageProvider]
     Send[SendTalkProvider]
 
-    Org --> Config
-    Config --> Resolver
+    Service --> Resolver
+    Resolver --> Config
     Resolver --> Cloud
     Resolver --> Send
+```
+
+- Service → 발송 흐름 관리
+- Resolver → 멀티테넌트 분기
+- Provider → 업체별 구현
+
+---
+
+## 4️⃣ 발송 파이프라인 비동기화
+
+### 🎯 동기 방식의 문제점
+
+- 외부 API 지연 → 사용자 응답 지연
+- 대량 발송 시 트래픽 스파이크
+- 외부 장애가 내부 장애로 전이
+
+### ✅ 비동기 구조 선택 이유
+
+- 장애 격리
+- 재시도 전략 적용
+- DLQ 처리 가능
+- Worker 수평 확장 가능
+
+---
+
+## 📊 비동기 메시지 발송 시퀀스
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant API
+    participant DB
+    participant Queue
+    participant Worker
+    participant Resolver as ProviderResolver
+    participant Provider as MessageProvider
+    participant ProviderAPI as External Provider API
+
+    Client->>API: 메시지 발송 요청
+    API->>DB: Message 저장 (PENDING + provider_snapshot)
+    API->>Queue: 발송 이벤트 발행 (message_id)
+
+    Queue->>Worker: 이벤트 전달 (message_id)
+    Worker->>DB: Message 조회 (provider_snapshot 포함)
+
+    Worker->>Resolver: resolve(provider_snapshot)
+    Resolver-->>Worker: Provider 구현체 반환
+
+    Worker->>Provider: send(request)
+    Provider->>ProviderAPI: 외부 API 호출
+    ProviderAPI-->>Provider: 응답
+    Provider-->>Worker: SendResult
+
+    Worker->>DB: 상태 업데이트 (SENT / FAILED + fail_reason)
+```
+
+---
+
+## A-2. 기술적 결정 사항
+
+| 항목 | 선택 | 근거 |
+|------|------|------|
+| 업체 분기 | Provider 추상화 | 확장성 확보 |
+| 발송 처리 | 비동기 큐 | 장애 격리 |
+| 설정 반영 | DRAFT → TEST → ACTIVE | 운영 실수 방지 |
+| 변경 일관성 | provider_snapshot | 재시도 안정성 |
+
+---
+
+## A-3. 리스크 및 대응
+
+| 위험 요소 | 영향 | 완화 전략 |
+|------------|------|------------|
+| 외부 API 장애 | SLA 위반 | 타임아웃 + 재시도 + DLQ |
+| 관리자 오입력 | 발송 중단 | TEST 필수화 |
+| 테넌트 침해 | 과금/법적 문제 | JWT 기반 org 검증 |
+| Secret 유출 | 비용 손실 | 암호화 + 마스킹 |
+| 동시 수정 | 설정 충돌 | Optimistic Lock |
+
+---
+
+# Part B. 화면 설계
+
+## 화면 흐름
+
+1. 설정 화면 진입 (조직명 / 현재 ACTIVE 표시)
+2. 업체 선택
+3. API Key / Secret 입력
+4. 저장 (DRAFT)
+5. 연결 테스트
+6. 활성화 (ACTIVE)
+
+---
+
+## UI 결정 사항
+
+| 항목 | 선택 | 이유 |
+|------|------|------|
+| 저장/활성화 분리 | 분리 | 운영 실수 방지 |
+| 테스트 필수화 | 성공 후 활성화 | 안정성 확보 |
+| Secret 표시 | 마스킹 + 재조회 불가 | 보안 강화 |
+| 조직 정보 강조 | 상단 고정 | 테넌트 실수 방지 |
+
+---
+
+## 예외 / 엣지 케이스
+
+| 상황 | UI 대응 |
+|------|----------|
+| 필수값 누락 | 인라인 에러 |
+| 테스트 실패 | 실패 사유 명확 표시 |
+| 외부 장애 | 재시도 안내 |
+| 동시 수정 | 충돌 메시지 |
+| 업체 변경 | "신규 메시지부터 적용" 안내 |
+
+---
+
+# AI 활용 내역
+
+### 사용 목적
+- 멀티테넌트 설계 구조 검토
+- 전략 패턴 구조 정제
+- 외부 API 장애 대응 전략 도출
+- Mermaid 다이어그램 생성
+
+### 활용 의도
+설계 대안 비교 및 리스크 도출 과정에서 AI를 참고하였으며,  
+최종 설계 선택은 요구사항과 운영 안정성을 기준으로 판단하였다.
+
+---
+
+# ✅ 최종 요약
+
+본 설계는 단순 업체 추가가 아닌,
+
+- 멀티테넌트 분리
+- 발송 일관성 보장
+- 장애 격리
+- 보안 강화
+- 확장 가능한 구조
+
+를 동시에 달성하기 위한 아키텍처 설계이다.
+
+신규 업체 추가 시 기존 코드 수정 없이  
+Provider 구현체 추가만으로 확장 가능하다.
