@@ -119,3 +119,27 @@ class SendTalkProvider : MessageProvider
 
 val provider = providerResolver.resolve(org.providerType)
 provider.send(request)
+
+#### 🔎 ProviderResolver의 역할
+
+- 조직의 ACTIVE 설정을 조회하여 provider_type을 결정한다.
+- provider_type에 따라 적절한 MessageProvider 구현체를 반환한다.
+- 서비스 레이어는 Provider 구현체에 대한 구체적인 의존 없이 send()만 호출한다.
+
+이를 통해 서비스 레이어는 발송 흐름만 책임지고,
+업체별 구현 세부사항은 Provider 구현체로 격리된다.
+
+### 📊 Provider 추상화 구조
+
+```mermaid
+flowchart LR
+    Org[Organization]
+    Config[OrganizationMessageConfig]
+    Resolver[ProviderResolver]
+    Cloud[CloudMessageProvider]
+    Send[SendTalkProvider]
+
+    Org --> Config
+    Config --> Resolver
+    Resolver --> Cloud
+    Resolver --> Send
