@@ -131,6 +131,7 @@ provider_type에 따라 적절한 MessageProvider 구현체를 반환한다.
 이를 통해 서비스 레이어는 발송 흐름만 책임지고,
 업체별 구현 세부사항은 Provider 구현체로 격리된다.
 
+```mermaid
 flowchart LR
     Org[Organization]
     Config[OrganizationMessageConfig]
