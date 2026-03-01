@@ -119,7 +119,7 @@ class SendTalkProvider : MessageProvider
 
 val provider = providerResolver.resolve(org.providerType)
 provider.send(request)
-
+---
 🔎 ProviderResolver의 역할
 
 조직의 ACTIVE 설정을 조회하여 provider_type을 결정한다.
